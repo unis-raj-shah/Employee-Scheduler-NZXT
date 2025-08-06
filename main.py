@@ -6,8 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any
 import schedule_service
-from notification_service import send_short_staffed_notification
-from database import retrieve_employees
+from database import save_scheduled_employees, get_scheduled_employees
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -27,16 +26,42 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    """Root endpoint with API information."""
-    return {
-        "name": "Warehouse Scheduler API",
-        "version": "1.0.0",
-        "endpoints": {
-            "/api/schedule": "Get warehouse scheduling data",
-            "/docs": "API documentation (Swagger UI)",
-            "/redoc": "API documentation (ReDoc)"
+    try:
+        # Run the scheduler
+        schedule_result = schedule_service.run_scheduler()
+        
+        if not schedule_result:
+            return {"error": "Failed to generate schedule"}
+            
+        tomorrow_data, day_after_data = schedule_result
+        
+        # Save scheduled employees to database for tomorrow
+        tomorrow_saved = save_scheduled_employees(
+            tomorrow_data['date'],
+            tomorrow_data['day_name'],
+            tomorrow_data['assigned_employees']
+        )
+        
+        # Save scheduled employees to database for day after tomorrow
+        day_after_saved = save_scheduled_employees(
+            day_after_data['date'],
+            day_after_data['day_name'],
+            day_after_data['assigned_employees']
+        )
+        
+        return {
+            "message": "Schedule generated successfully",
+            "tomorrow": tomorrow_data,
+            "day_after": day_after_data,
+            "database_saves": {
+                "tomorrow_saved": tomorrow_saved,
+                "day_after_saved": day_after_saved
+            }
         }
-    }
+        
+    except Exception as e:
+        print(f"Error in root endpoint: {str(e)}")
+        return {"error": str(e)}
 
 @app.get("/api/schedule")
 async def get_schedule() -> Dict[str, Any]:
@@ -56,14 +81,62 @@ async def get_schedule() -> Dict[str, Any]:
                 status_code=404,
                 detail="No scheduling data available for tomorrow"
             )
+        
+        # Save scheduled employees to database
+        tomorrow_data = scheduling_data.get('tomorrow', {})
+        day_after_data = scheduling_data.get('day_after', {})
+        
+        saves_successful = {}
+        if tomorrow_data:
+            saves_successful['tomorrow'] = save_scheduled_employees(
+                tomorrow_data['date'],
+                tomorrow_data['day_name'],
+                tomorrow_data['assigned_employees']
+            )
+        
+        if day_after_data:
+            saves_successful['day_after'] = save_scheduled_employees(
+                day_after_data['date'],
+                day_after_data['day_name'],
+                day_after_data['assigned_employees']
+            )
+        
         return {
             'success': True,
-            'data': scheduling_data
+            'data': scheduling_data,
+            'database_saves': saves_successful
         }
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Error generating schedule: {str(e)}"
+        )
+
+@app.get("/api/scheduled-employees/{date}")
+async def get_scheduled_employees_by_date(date: str) -> Dict[str, Any]:
+    """
+    Get scheduled employees for a specific date.
+    
+    Args:
+        date: Date in YYYY-MM-DD format
+        
+    Returns:
+        Dict containing scheduled employee details for the specified date.
+    
+    Raises:
+        HTTPException: If there's an error retrieving the scheduled employees.
+    """
+    try:
+        scheduled_data = get_scheduled_employees(date)
+        
+        return {
+            'success': True,
+            'data': scheduled_data
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving scheduled employees: {str(e)}"
         )
 
 if __name__ == "__main__":
@@ -78,44 +151,30 @@ if __name__ == "__main__":
         print("\n=== Warehouse Shift Scheduler ===")
         result = schedule_service.run_scheduler()
         if result:
-            print(f"\nScheduling for: {result['date']} ({result['day_name']})")
+            # Process tomorrow's data
+            tomorrow_data = result['tomorrow']
+            print(f"\nScheduling for Tomorrow ({tomorrow_data['date']} - {tomorrow_data['day_name']})")
             print("\nForecast:")
-            print(f"- Shipping Pallets: {result['forecast_data']['shipping_pallets']:.1f}")
-            print(f"- Incoming Pallets: {result['forecast_data']['incoming_pallets']:.1f}")
-            print(f"- Cases to Pick: {result['forecast_data']['cases_to_pick']:.1f}")
+            print(f"- Shipping Pallets: {tomorrow_data['forecast_data']['shipping_pallets']:.1f}")
+            print(f"- Incoming Pallets: {tomorrow_data['forecast_data']['incoming_pallets']:.1f}")
+            print(f"- Cases to Pick: {tomorrow_data['forecast_data']['cases_to_pick']:.1f}")
+            print(f"- Staged Pallets: {tomorrow_data['forecast_data']['staged_pallets']:.1f}")
             
             print("\nRequired Staff:")
-            for operation, roles in result['required_roles'].items():
-                print(f"\n{operation.title()} Operations:")
-                for role, count in roles.items():
-                    print(f"- {role.replace('_', ' ').title()}: {count}")
+            for role, count in tomorrow_data['required_roles'].items():
+                print(f"- {role}: {count}")
 
-            # Calculate shortages based on available employees in the database
-            required_roles = result['required_roles']
+            # Process day after tomorrow's data
+            day_after_data = result['day_after']
+            print(f"\nScheduling for Day After Tomorrow ({day_after_data['date']} - {day_after_data['day_name']})")
+            print("\nForecast:")
+            print(f"- Shipping Pallets: {day_after_data['forecast_data']['shipping_pallets']:.1f}")
+            print(f"- Incoming Pallets: {day_after_data['forecast_data']['incoming_pallets']:.1f}")
+            print(f"- Cases to Pick: {day_after_data['forecast_data']['cases_to_pick']:.1f}")
+            print(f"- Staged Pallets: {day_after_data['forecast_data']['staged_pallets']:.1f}")
             
-            # First flatten the role structure
-            flattened_roles = {}
-            for operation, roles in required_roles.items():
-                for role, count in roles.items():
-                    role_key = f"{operation}_{role}"
-                    flattened_roles[role_key] = count
-            
-            # Get available employees for each role
-            matched_employees = retrieve_employees(flattened_roles)
-            
-            # Calculate shortages
-            shortages = {}
-            for role_key, required_count in flattened_roles.items():
-                available_count = len(matched_employees.get(role_key, []))
-                if available_count < required_count:
-                    shortages[role_key] = required_count - available_count
-                    print(f"Debug - Role: {role_key}, Required: {required_count}, Available: {available_count}, Shortage: {shortages[role_key]}")
-
-            if shortages:
-                print("\nShortages (based on available employees):")
-                for role, shortage in shortages.items():
-                    operation, role_name = role.split('_', 1)
-                    print(f"- {operation.title()} {role_name.replace('_', ' ').title()}: {shortage}")
-                send_short_staffed_notification(shortages, date=result['date'])
+            print("\nRequired Staff:")
+            for role, count in day_after_data['required_roles'].items():
+                print(f"- {role}: {count}")
         else:
-            print("\nNo scheduling data available for tomorrow")
+            print("\nNo scheduling data available for the next two days")

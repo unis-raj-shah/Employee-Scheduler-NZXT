@@ -5,11 +5,13 @@ import json
 import re
 import Levenshtein
 from typing import Dict, List, Any, Optional
+from datetime import datetime
 from config import DB_PATH, ROLE_MAPPINGS
 
 # Initialize ChromaDB client
 chroma_client = chromadb.PersistentClient(path=DB_PATH)
 employee_collection = chroma_client.get_or_create_collection(name="employees")
+scheduled_employees_collection = chroma_client.get_or_create_collection(name="scheduled_employees")
 
 def normalize_role(role: str) -> str:
     """
@@ -39,7 +41,6 @@ def retrieve_employees(required_roles: Dict[str, int]) -> Dict[str, List[str]]:
         Dictionary mapping roles to lists of available employee IDs
     """
     matched_employees = {}
-    assigned_employees = set()  # Keep track of already assigned employees
     
     try:
         # Get all employees from the database once
@@ -47,42 +48,21 @@ def retrieve_employees(required_roles: Dict[str, int]) -> Dict[str, List[str]]:
         all_ids = all_employees.get("ids", [])
         all_metadatas = all_employees.get("metadatas", [])
         
-        # First pass: collect all available employees for each base role
-        available_by_role = {}
-        for i, metadata in enumerate(all_metadatas):
-            if is_employee_available(metadata):
-                job_title = normalize_role(metadata.get("original_job_title", ""))
-                emp_id = all_ids[i]
-                
-                # Check each base role
-                for role_key in required_roles:
-                    base_role = role_key.split('_', 1)[-1] if '_' in role_key else role_key
-                    role_variations = ROLE_MAPPINGS.get(base_role, [base_role])
+        for role in required_roles:
+            matched_employees[role] = []
+            role_variations = ROLE_MAPPINGS.get(role, [role])
+            
+            for i, metadata in enumerate(all_metadatas):
+                if is_employee_available(metadata):
+                    employee_skills = metadata.get("skills", "").lower().split(',')
+                    employee_skills = [skill.strip() for skill in employee_skills]
                     
-                    if any(variation.lower() in job_title for variation in role_variations):
-                        if base_role not in available_by_role:
-                            available_by_role[base_role] = []
-                        available_by_role[base_role].append(emp_id)
-        
-        # Second pass: assign employees to roles, ensuring no duplicates
-        for role_key in required_roles:
-            matched_employees[role_key] = []
-            base_role = role_key.split('_', 1)[-1] if '_' in role_key else role_key
-            required_count = required_roles[role_key]
+                    # Check if employee has any of the role variations in their skills
+                    if any(variation.lower() in employee_skills for variation in role_variations):
+                        matched_employees[role].append(all_ids[i])
             
-            # Get available employees for this base role
-            available = available_by_role.get(base_role, [])
-            
-            # Assign employees that haven't been assigned yet
-            for emp_id in available:
-                if emp_id not in assigned_employees and len(matched_employees[role_key]) < required_count:
-                    matched_employees[role_key].append(emp_id)
-                    assigned_employees.add(emp_id)
-                    print(f"Assigned employee {emp_id} to {role_key}")
-            
-            # Print warning if not enough employees
-            if len(matched_employees[role_key]) < required_count:
-                print(f"Warning: Not enough employees for {role_key}. Need {required_count}, found {len(matched_employees[role_key])}")
+            if not matched_employees[role]:
+                print(f"Warning: No employees found for role {role}")
     
     except Exception as e:
         print(f"Error retrieving employees: {e}")
@@ -189,3 +169,145 @@ def get_employee_details(emp_id: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"Error getting employee details: {e}")
         return {}
+
+def save_scheduled_employees(date: str, day_name: str, assigned_employees: Dict[str, List[str]]) -> bool:
+    """
+    Save scheduled employee details to the database.
+    
+    Args:
+        date: Date in YYYY-MM-DD format
+        day_name: Name of the day (Monday, Tuesday, etc.)
+        assigned_employees: Dictionary mapping roles to lists of employee IDs
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Create a unique ID for this schedule
+        schedule_id = f"schedule_{date}"
+        
+        # Prepare the scheduled employees data
+        scheduled_data = []
+        documents = []
+        metadatas = []
+        ids = []
+        
+        for role, employee_ids in assigned_employees.items():
+            for employee_id in employee_ids:
+                # Get employee details
+                employee_details = get_employee_details(employee_id)
+                
+                # Create unique ID for this assignment
+                assignment_id = f"{schedule_id}_{role}_{employee_id}"
+                
+                # Create metadata for this assignment
+                metadata = {
+                    "schedule_date": date,
+                    "day_name": day_name,
+                    "employee_id": employee_id,
+                    "employee_name": employee_details.get("name", employee_id),
+                    "assigned_role": role,
+                    "created_at": datetime.now().isoformat(),
+                    "schedule_id": schedule_id
+                }
+                
+                # Create document text
+                document = f"""Schedule Assignment
+Date: {date} ({day_name})
+Employee ID: {employee_id}
+Employee Name: {employee_details.get('name', employee_id)}
+Assigned Role: {role}
+Department: {employee_details.get('department', 'N/A')}
+Job Title: {employee_details.get('original_job_title', 'N/A')}
+Email: {employee_details.get('email', 'N/A')}
+Created: {metadata['created_at']}"""
+                
+                ids.append(assignment_id)
+                metadatas.append(metadata)
+                documents.append(document)
+        
+        # Save to ChromaDB
+        if ids:  # Only save if there are assignments
+            scheduled_employees_collection.upsert(
+                ids=ids,
+                metadatas=metadatas,
+                documents=documents
+            )
+            print(f"Saved {len(ids)} scheduled employee assignments for {date}")
+            return True
+        else:
+            print(f"No employee assignments to save for {date}")
+            return False
+            
+    except Exception as e:
+        print(f"Error saving scheduled employees: {e}")
+        return False
+
+def get_scheduled_employees(date: str) -> Dict[str, Any]:
+    """
+    Retrieve scheduled employees for a specific date.
+    
+    Args:
+        date: Date in YYYY-MM-DD format
+        
+    Returns:
+        Dictionary containing scheduled employee details
+    """
+    try:
+        # Query scheduled employees for the specific date
+        results = scheduled_employees_collection.get(
+            where={"schedule_date": date}
+        )
+        
+        if not results or not results.get("metadatas"):
+            return {"date": date, "assignments": [], "total_count": 0}
+        
+        assignments = []
+        for i, metadata in enumerate(results["metadatas"]):
+            assignment = {
+                "employee_id": metadata.get("employee_id"),
+                "employee_name": metadata.get("employee_name"),
+                "assigned_role": metadata.get("assigned_role"),
+                "day_name": metadata.get("day_name"),
+                "created_at": metadata.get("created_at")
+            }
+            assignments.append(assignment)
+        
+        return {
+            "date": date,
+            "assignments": assignments,
+            "total_count": len(assignments)
+        }
+        
+    except Exception as e:
+        print(f"Error retrieving scheduled employees: {e}")
+        return {"date": date, "assignments": [], "total_count": 0}
+
+def delete_scheduled_employees(date: str) -> bool:
+    """
+    Delete all scheduled employee assignments for a specific date.
+    
+    Args:
+        date: Date in YYYY-MM-DD format
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Get all assignments for the date
+        results = scheduled_employees_collection.get(
+            where={"schedule_date": date}
+        )
+        
+        if results and results.get("ids"):
+            # Delete all assignments for this date
+            scheduled_employees_collection.delete(ids=results["ids"])
+            print(f"Deleted {len(results['ids'])} scheduled assignments for {date}")
+            return True
+        else:
+            print(f"No scheduled assignments found for {date}")
+            return True
+            
+    except Exception as e:
+        print(f"Error deleting scheduled employees: {e}")
+        return False

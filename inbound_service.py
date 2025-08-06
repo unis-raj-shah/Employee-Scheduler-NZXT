@@ -3,6 +3,7 @@
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
 from api_client import get_priority_report, get_inbound_receipts, get_equipment_details
+from datetime import datetime
 
 def find_priority_report_columns(priority_df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -136,7 +137,7 @@ def get_equipment_details_pallets(priority_df: pd.DataFrame) -> float:
 
     return total_pallets
 
-def get_incoming_data() -> Dict[str, float]:
+def get_incoming_data(target_date: Optional[datetime] = None) -> Dict[str, float]:
     """
     Get inbound receipt data for forecasting.
     
@@ -149,7 +150,7 @@ def get_incoming_data() -> Dict[str, float]:
             return {"incoming_pallets": 0}
             
         priority_df = priority_dfs['Inbound']
-        receipts = get_inbound_receipts()
+        receipts = get_inbound_receipts(target_date)
         
         # Get matched receipts with their pallet counts
         matched_incoming = get_matching_incoming_rns(receipts, priority_df)
@@ -161,11 +162,11 @@ def get_incoming_data() -> Dict[str, float]:
             if isinstance(pallet_count, (int, float, str)) and str(pallet_count).replace('.', '').isdigit():
                 # Cap pallet count at 28 if it exceeds 33
                 pallet_count = float(pallet_count)
-                if pallet_count > 33:
-                    pallet_count = 28
+                if pallet_count > 50:
+                    pallet_count = 34
                 receipt_pallets[rn_id] = pallet_count
         
-        equipment_details = get_equipment_details()
+        equipment_details = get_equipment_details(target_date)
         
         # Get equipment receipt numbers and their pallet counts
         equipment_pallets = 0
@@ -190,8 +191,8 @@ def get_incoming_data() -> Dict[str, float]:
                         try:
                             pallet_qty = float(row[pallet_qty_col]) if pd.notna(row[pallet_qty_col]) else 0
                             # Cap pallet count at 28 if it exceeds 33
-                            if pallet_qty > 33:
-                                pallet_qty = 28
+                            if pallet_qty > 50:
+                                pallet_qty = 34
                             equipment_pallets += pallet_qty
                         except (ValueError, TypeError):
                             continue

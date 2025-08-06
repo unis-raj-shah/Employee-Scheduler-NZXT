@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 
 # API Settings
 WISE_API_HEADERS = {
-    "authorization": os.getenv("WISE_API_KEY", "6d95c4d1-a408-4cc4-b1e1-04f3485ec78a"),
+    "authorization": os.getenv("WISE_API_KEY", "858a0320-ce70-47ab-94f0-f832ec0f6715"),
     "wise-company-id": os.getenv("WISE_COMPANY_ID", "ORG-1"),
     "wise-facility-id": os.getenv("WISE_FACILITY_ID", "F1"),
     "content-type": "application/json;charset=UTF-8",
@@ -16,9 +16,9 @@ WISE_API_HEADERS = {
 EMAIL_CONFIG = {
     "smtp_server": os.getenv("SMTP_SERVER", "smtp.office365.com"),
     "smtp_port": int(os.getenv("SMTP_PORT", "587")),
-    "sender_email": os.getenv("SENDER_EMAIL", "mark.wellington@unisco.com"),
-    "sender_password": os.getenv("SENDER_PASSWORD", "Cavalry5419D$"),
-    "default_recipients": os.getenv("DEFAULT_RECIPIENTS", "raj.shah@unisco.com,mark.tuttle@unisco.com,john.diaz@unisco.com,carlos.morales@unisco.com,steven.balbas@unisco.com,ryan.pasiliao@unisco.com,mark.wellington@unisco.com").split(',')
+    "sender_email": os.getenv("SENDER_EMAIL", "raj.shah@unisco.com"),
+    "sender_password": os.getenv("SENDER_PASSWORD", "Raj@UNIS123"),
+    "default_recipients": os.getenv("DEFAULT_RECIPIENTS", "raj.shah@unisco.com,ryan.pasiliao@unisco.com,mark.tuttle@unisco.com,john.diaz@unisco.com,steven.balbas@unisco.com,sergio.abarca@unisco.com").split(',')
 }
 
 # Database Settings
@@ -51,7 +51,7 @@ DEFAULT_METRICS = {
             "avg_lumper_time": 3.75  # minutes per pallet
         },
         "picking": {
-            "avg_pick_time": 1.0,     # minutes per case
+            "avg_pick_time": 0.8,     # minutes per case
             "avg_scan_time": 0.15,    # minutes per case
             "avg_wrap_time": 2.5     # minutes per pallet
         },
